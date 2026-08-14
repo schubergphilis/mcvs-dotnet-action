@@ -1,0 +1,912 @@
+# TASK_X_REMOTE_TASKFILES=1 task remote:lint
+# - cmd: steps that will be run sequentially.
+# - deps: tasks that will be run in parallel.
+#
+# yamllint disable rule:line-length
+# yamllint disable rule:quoted-strings
+---
+version: 3
+vars:
+  # Variables that have to be defined first as they are used in other variables.
+  DOTNET_BIN:
+    sh: |
+      if [ -n "${MCVS_DOTNET_ACTION_BIN}" ]; then
+        echo "${MCVS_DOTNET_ACTION_BIN}"
+        exit 0
+      fi
+      echo "${HOME}/.mcvs-dotnet-action/bin"
+  CODE_COVERAGE_EXPECTED:
+    sh: |
+      if [ -n "${CODE_COVERAGE_EXPECTED}" ]; then
+        echo "${CODE_COVERAGE_EXPECTED}"
+        exit 0
+      fi
+      if [ -f .github/workflows/dotnet.yml ] && command -v yq >/dev/null 2>&1; then
+        value=$(yq '.jobs.mcvs-dotnet-action.steps[] | select(.uses | test(".*mcvs-dotnet-action.*")) | .with.code-coverage-expected' .github/workflows/dotnet.yml)
+        if [ -n "${value}" ] && [ "${value}" != "null" ]; then
+          echo "${value}"
+          exit 0
+        fi
+      fi
+      echo 80
+  OS_TYPE_MAC: Darwin
+  # Variables that are sorted alphabetically and are used in the tasks.
+  BUILD_DIR: '{{.BUILD_DIR | default "build/binary"}}'
+  CODE_COVERAGE_STRICT: '{{.CODE_COVERAGE_STRICT | default "true"}}'
+  CODE_COVERAGE_TIMEOUT: '{{.CODE_COVERAGE_TIMEOUT | default "8m"}}'
+  COVERAGE_COBERTURA: build/coverage/Cobertura.xml
+  COVERAGE_HTML: build/coverage/html
+  COVERAGE_REPORT_DIR: build/coverage
+  COVERAGE_RESULTS_DIR: build/coverage/results
+  DOTNET_BUILD_CONFIGURATION: '{{.DOTNET_BUILD_CONFIGURATION | default "Release"}}'
+  DOTNET_BUILD_TOOL: '{{.DOTNET_BUILD_TOOL | default "dotnet"}}'
+  DOTNET_PARALLEL_TESTS:
+    sh: |
+      if [ "$(uname -s)" = "Darwin" ]; then
+        sysctl -n hw.ncpu
+      else
+        nproc
+      fi
+  DOTNET_SOLUTION:
+    sh: |
+      if [ -n "${DOTNET_SOLUTION}" ]; then
+        echo "${DOTNET_SOLUTION}"
+        exit 0
+      fi
+      solution=$(find . -maxdepth 2 \( -name '*.slnx' -o -name '*.sln' \) -not -path '*/bin/*' -not -path '*/obj/*' | sort | head -n1)
+      if [ -n "${solution}" ]; then
+        echo "${solution}"
+        exit 0
+      fi
+      echo "."
+  DOTNET_VERBOSITY: '{{.DOTNET_VERBOSITY | default "minimal"}}'
+  MSBUILD_ARGS: '{{.MSBUILD_ARGS | default ""}}'
+  MUTATION_SCORE_EXPECTED:
+    sh: |
+      if [ -n "${MUTATION_SCORE_EXPECTED}" ]; then
+        echo "${MUTATION_SCORE_EXPECTED}"
+        exit 0
+      fi
+      if [ -f .github/workflows/dotnet.yml ] && command -v yq >/dev/null 2>&1; then
+        value=$(yq '.jobs.mcvs-dotnet-action.steps[] | select(.uses | test(".*mcvs-dotnet-action.*")) | .with.mutation-score-expected' .github/workflows/dotnet.yml)
+        if [ -n "${value}" ] && [ "${value}" != "null" ]; then
+          echo "${value}"
+          exit 0
+        fi
+      fi
+      echo 60
+  MUTATION_TIMEOUT: '{{.MUTATION_TIMEOUT | default "20m"}}'
+  OSV_SCANNER_BIN: "{{.DOTNET_BIN}}/osv-scanner"
+  OSV_SCANNER_OUTPUT: /tmp/osv-scanner.txt
+  OSV_SCANNER_VERSION: v2.5.0
+  OSV_SCANNER_VERSION_WITHOUT_V_PREFIX: # the version found by the package-version-updater contains a 'v' prefix
+    sh: echo {{.OSV_SCANNER_VERSION}} | sed -e "s|v||"
+  RELEASE_APPLICATION_NAME: '{{.RELEASE_APPLICATION_NAME | default ""}}'
+  RELEASE_PROJECT: '{{.RELEASE_PROJECT | default ""}}'
+  RELEASE_RUNTIME: '{{.RELEASE_RUNTIME | default "linux-x64"}}'
+  RELEASE_SELF_CONTAINED: '{{.RELEASE_SELF_CONTAINED | default "true"}}'
+  RELEASE_VERSION: '{{.RELEASE_VERSION | default ""}}'
+  REPORT_GENERATOR_BIN: "{{.DOTNET_BIN}}/reportgenerator"
+  REPORT_GENERATOR_PACKAGE: dotnet-reportgenerator-globaltool
+  REPORT_GENERATOR_VERSION: 5.5.11
+  RESTORE_ARGS: '{{.RESTORE_ARGS | default ""}}'
+  SOURCE_DIR: '{{.SOURCE_DIR | default "."}}'
+  STRYKER_BIN: "{{.DOTNET_BIN}}/dotnet-stryker"
+  STRYKER_CONFIG_PATH: '{{.STRYKER_CONFIG_PATH | default "stryker-config.json"}}'
+  STRYKER_OUTPUT_DIR: '{{.STRYKER_OUTPUT_DIR | default "build/mutation"}}'
+  STRYKER_PACKAGE: dotnet-stryker
+  STRYKER_VERSION: 4.16.0
+  TESTCONTAINERS_RYUK_DISABLED: '{{.TESTCONTAINERS_RYUK_DISABLED | default "false"}}'
+  TEST_FILTER: '{{.TEST_FILTER | default ""}}'
+  TEST_FILTER_COMPONENT: '{{.TEST_FILTER_COMPONENT | default "Category=Component"}}'
+  TEST_FILTER_E2E: '{{.TEST_FILTER_E2E | default "Category=E2E"}}'
+  TEST_FILTER_INTEGRATION: '{{.TEST_FILTER_INTEGRATION | default "Category=Integration"}}'
+  TEST_FILTER_UNIT: '{{.TEST_FILTER_UNIT | default "Category!=Integration&Category!=Component&Category!=E2E"}}'
+  TEST_TIMEOUT: '{{.TEST_TIMEOUT | default "4m"}}'
+  YQ_BIN: "{{.DOTNET_BIN}}/yq"
+  YQ_VERSION: v4.53.3
+tasks:
+  build:
+    cmds:
+      - task: dotnet-log
+      - task: msbuild-check
+      - |
+        # MSBuild is required for the projects that the .NET SDK cannot drive
+        # on its own, such as the .NET Framework and the C++/CLI ones.
+        if [ "{{.DOTNET_BUILD_TOOL}}" = "msbuild" ]; then
+          msbuild {{.DOTNET_SOLUTION}} \
+            -maxCpuCount \
+            -restore \
+            -verbosity:{{.DOTNET_VERBOSITY}} \
+            -p:Configuration={{.DOTNET_BUILD_CONFIGURATION}} \
+            {{.MSBUILD_ARGS}} \
+            {{.BUILD_EXTRA_ARGS}}
+          exit 0
+        fi
+
+        dotnet build {{.DOTNET_SOLUTION}} \
+          --configuration {{.DOTNET_BUILD_CONFIGURATION}} \
+          --verbosity {{.DOTNET_VERBOSITY}} \
+          {{.MSBUILD_ARGS}} \
+          {{.BUILD_EXTRA_ARGS}}
+    desc: build the solution
+    silent: true
+  check-docker-networks:
+    cmds:
+      - |
+        get_docker_network_count() {
+          docker network ls -q | wc -l | tr -d ' '
+        }
+
+        if [ "{{.CHECK_TYPE}}" = "before" ]; then
+          echo "Checking Docker networks before test..."
+          networks_count=$(get_docker_network_count)
+          echo "Docker networks before: ${networks_count}"
+          echo "${networks_count}" > /tmp/docker_networks_before
+        fi
+
+        if [ "{{.CHECK_TYPE}}" = "after" ]; then
+          echo "Checking Docker networks after test..."
+          networks_after=$(get_docker_network_count)
+          networks_before=$(cat /tmp/docker_networks_before 2>/dev/null || echo "0")
+          echo "Docker networks after: ${networks_after}"
+
+          # Check for both high network count and orphaned networks
+          show_warning=false
+          warning_messages=""
+
+          if [ "${networks_after}" -gt "4" ]; then
+            show_warning=true
+            warning_messages="${warning_messages}# Found ${networks_after} Docker networks, which exceeds the"$'\n'
+            warning_messages="${warning_messages}# default of three networks: bridge, host and none."$'\n'
+            warning_messages="${warning_messages}#"$'\n'
+          fi
+
+          if [ "${networks_after}" -gt "${networks_before}" ]; then
+            show_warning=true
+            if [ -n "${warning_messages}" ]; then
+              warning_messages="${warning_messages}# Additionally, found $((networks_after - networks_before)) orphaned Docker"$'\n'
+            else
+              warning_messages="${warning_messages}# Found $((networks_after - networks_before)) orphaned Docker"$'\n'
+            fi
+            warning_messages="${warning_messages}# networks."$'\n'
+            warning_messages="${warning_messages}#"$'\n'
+            warning_messages="${warning_messages}# Note: Orphaned networks were not removed automatically."$'\n'
+            warning_messages="${warning_messages}# Please check whether they are cleaned by the component"$'\n'
+            warning_messages="${warning_messages}# and/or integration tests."$'\n'
+            warning_messages="${warning_messages}#"$'\n'
+          fi
+
+          if [ "${show_warning}" = "true" ]; then
+            echo
+            echo "###############################################################"
+            echo "#"
+            echo "# WARNING"
+            echo "#"
+            echo "###############################################################"
+            echo "#"
+            echo -e "${warning_messages}"
+            echo "# Current Docker networks:"
+            echo "# $(docker network ls)"
+            echo "#"
+            echo "###############################################################"
+
+            sleep 5 # to ensure that user will see the message
+          fi
+        fi
+    internal: true
+    silent: true
+  coverage:
+    cmds:
+      - task: report-generator-install
+      - |
+        rm -rf {{.COVERAGE_RESULTS_DIR}}
+      - task: test
+        vars:
+          TEST_EXTRA_ARGS: >-
+            --collect:"XPlat Code Coverage" --results-directory {{.COVERAGE_RESULTS_DIR}}
+          TEST_TIMEOUT: "{{.CODE_COVERAGE_TIMEOUT}}"
+      - |
+        set -eu
+
+        if [ -z "$(find {{.COVERAGE_RESULTS_DIR}} -name 'coverage.cobertura.xml' 2>/dev/null)" ]; then
+          echo "No cobertura report has been found in: {{.COVERAGE_RESULTS_DIR}}. Ensure that the test projects reference the 'coverlet.collector' package, as that package implements the 'XPlat Code Coverage' data collector."
+          exit 1
+        fi
+
+        {{.REPORT_GENERATOR_BIN}} \
+          "-reports:{{.COVERAGE_RESULTS_DIR}}/**/coverage.cobertura.xml" \
+          "-reporttypes:Cobertura;TextSummary" \
+          "-targetdir:{{.COVERAGE_REPORT_DIR}}" \
+          "-verbosity:Warning"
+      - |
+        code_coverage_actual=$(grep -o 'line-rate="[0-9.]*"' {{.COVERAGE_COBERTURA}} | head -n1 | sed -E 's/[^0-9.]//g' | awk '{ printf "%.1f", $1 * 100 }')
+
+        echo "Code coverage overview: {{.COVERAGE_COBERTURA}}"
+        echo "The actual code coverage: ${code_coverage_actual}"
+        echo "CODE_COVERAGE_STRICT: {{.CODE_COVERAGE_STRICT}}"
+
+        if (( $(echo "${code_coverage_actual} < {{.CODE_COVERAGE_EXPECTED}}" | bc -l) )); then
+          echo "The actual code coverage: '${code_coverage_actual}' is too low. Expected: '{{.CODE_COVERAGE_EXPECTED}}'. Resolve the issue by writing more unit and/or integration tests."
+          exit 1
+        elif [ "{{.CODE_COVERAGE_STRICT}}" = "true" ] && (( $(echo "${code_coverage_actual} > {{.CODE_COVERAGE_EXPECTED}}" | bc -l) )); then
+          echo "The actual code coverage: '${code_coverage_actual}' exceeds the expected coverage. Please adjust the threshold that is defined in the .github/workflows/dotnet.yml workflow from '{{.CODE_COVERAGE_EXPECTED}}' to '${code_coverage_actual}'."
+          exit 1
+        fi
+    desc: check code coverage
+    silent: true
+  coverage-visual:
+    cmds:
+      - task: coverage
+      - |
+        {{.REPORT_GENERATOR_BIN}} \
+          "-reports:{{.COVERAGE_RESULTS_DIR}}/**/coverage.cobertura.xml" \
+          "-reporttypes:Html" \
+          "-targetdir:{{.COVERAGE_HTML}}" \
+          "-verbosity:Warning"
+
+        open {{.COVERAGE_HTML}}/index.html
+    desc: show code coverage
+    silent: true
+  docker-check:
+    cmds:
+      - |
+        if ! command -v docker > /dev/null 2>&1; then
+          echo "The docker CLI has not been found. The integration, component and end-to-end tests are run with Testcontainers, which requires a container runtime, see https://dotnet.testcontainers.org/."
+          exit 1
+        fi
+
+        if ! docker info > /dev/null 2>&1; then
+          echo "The container runtime is not reachable. Start it, or point the DOCKER_HOST environment variable at it, as Testcontainers cannot start a container without it."
+          exit 1
+        fi
+
+        echo "DOCKER_HOST: ${DOCKER_HOST:-unset, the endpoint of the active docker context is used}"
+        echo "TESTCONTAINERS_RYUK_DISABLED: {{.TESTCONTAINERS_RYUK_DISABLED}}"
+        docker context show 2>/dev/null || true
+    internal: true
+    silent: true
+  dotnet-log:
+    cmds:
+      - |
+        echo "DOTNET_BIN: {{.DOTNET_BIN}}"
+        echo "DOTNET_PARALLEL_TESTS: {{.DOTNET_PARALLEL_TESTS}}"
+        echo "DOTNET_SOLUTION: {{.DOTNET_SOLUTION}}"
+        dotnet --version
+    silent: true
+  dotnet-tool-install:
+    cmds:
+      - |
+        mkdir -p {{.DOTNET_BIN}}
+
+        if dotnet tool list --tool-path {{.DOTNET_BIN}} 2>/dev/null | grep -qi "^{{.TOOL_PACKAGE}}[[:space:]]\+{{.TOOL_VERSION}}[[:space:]]"; then
+          exit 0
+        fi
+
+        echo "Installing {{.TOOL_PACKAGE}} version {{.TOOL_VERSION}}..."
+        if ! dotnet tool update "{{.TOOL_PACKAGE}}" \
+          --tool-path {{.DOTNET_BIN}} \
+          --version "{{.TOOL_VERSION}}"; then
+          echo "Failed to install the {{.TOOL_PACKAGE}} tool. Verify that nuget.org is reachable and that the version: '{{.TOOL_VERSION}}' exists."
+          exit 1
+        fi
+    internal: true
+    silent: true
+  fix-linting-issues:
+    cmds:
+      - task: format
+    desc: automatically fix linting issues using dotnet format
+    silent: true
+  format:
+    cmds:
+      - |
+        dotnet format {{.DOTNET_SOLUTION}} \
+          --severity info \
+          --verbosity {{.DOTNET_VERBOSITY}}
+    desc: format the code using dotnet format
+    silent: true
+  keep-local-and-remote-versions-in-sync:
+    cmds:
+      - task: keep-local-task-up-to-date-with-version-defined-in-action
+      - task: keep-mcvs-dotnet-action-version-local-taskfile-in-sync-with-github-workflow
+  keep-local-task-up-to-date-with-version-defined-in-action:
+    cmds:
+      - task: yq-install
+      - |
+        if [ -f Taskfile.yml ]; then
+          expected_task_version=$(curl -s {{.REMOTE_URL}}/{{.REMOTE_URL_REPO}}/{{.REMOTE_URL_REF}}/action.yml | {{.YQ_BIN}} '.inputs.task-version.default')
+
+          # An unreadable remote action.yml is not an error: it is the normal
+          # situation in the mcvs-dotnet-action repository itself, where the
+          # Taskfile includes ./build/task.yml and the REMOTE_URL variables are
+          # therefore undefined. Acting on the empty result would install a
+          # bogus 'vnull' version of Task.
+          if [ -z "${expected_task_version}" ] || [ "${expected_task_version}" = "null" ]; then
+            echo "Skipping the Task version check, as the remote action.yml could not be read: {{.REMOTE_URL}}/{{.REMOTE_URL_REPO}}/{{.REMOTE_URL_REF}}/action.yml"
+            exit 0
+          fi
+
+          current_task_version=$(task --version | sed -E 's/.*([0-9]+\.[0-9]+\.[0-9]+).*/\1/')
+          if [ -z "${current_task_version}" ]; then
+            echo "Failed to extract the current version of Task."
+            exit 1
+          fi
+
+          if [ "${expected_task_version}" != "${current_task_version}" ]; then
+            if [ -n "${GITHUB_ACTIONS}" ]; then
+              echo "The task binary: ${current_task_version} differs from the expected: ${expected_task_version}. Updating it..."
+              sh -c "$(curl --location --silent --show-error --fail https://taskfile.dev/install.sh)" -- -d -b /usr/local/bin v${expected_task_version}
+              exit 0
+            fi
+
+            echo
+            echo "###############################################################"
+            echo "#"
+            echo "# WARNING"
+            echo "#"
+            echo "###############################################################"
+            echo "#"
+            echo "# The version of the local task binary: ${current_task_version}"
+            echo "# differs from the expected: ${expected_task_version}."
+            echo "# Resolve the issue by updating the local task binary to"
+            echo "# version: ${expected_task_version}."
+            echo "# A remediation option is to run:"
+            echo "# 'sh -c \"\$(curl --location https://taskfile.dev/install.sh)\" -- -d -b /usr/local/bin v${expected_task_version}',"
+            echo "# but the choice of installation method depends on the"
+            echo "# preferred way to install Task."
+            echo "#"
+            echo "###############################################################"
+            echo
+
+            sleep 3 # to ensure that user will see the message
+          fi
+        fi
+    silent: true
+  keep-mcvs-dotnet-action-version-local-taskfile-in-sync-with-github-workflow:
+    cmds:
+      - task: yq-install
+      - |
+        if [ -f .github/workflows/dotnet.yml ]; then
+          expected_mcvs_dotnet_action_version=$({{.YQ_BIN}} '.jobs."mcvs-dotnet-action".steps[] | select(.uses | test(".*/mcvs-dotnet-action@.*")) | .uses' .github/workflows/dotnet.yml | sed -E 's/.*@(.*)/\1/')
+
+          # A workflow that refers to a checkout of the action, e.g. 'uses: ./'
+          # in the mcvs-dotnet-action repository itself, has no version to keep
+          # in sync.
+          if [ -z "${expected_mcvs_dotnet_action_version}" ]; then
+            echo "Skipping the mcvs-dotnet-action version check, as the .github/workflows/dotnet.yml does not refer to a released version of the action."
+            exit 0
+          fi
+
+          current_mcvs_dotnet_action_version=$({{.YQ_BIN}} '.vars.REMOTE_URL_REF' Taskfile.yml)
+
+          if [ -z "${current_mcvs_dotnet_action_version}" ] || [ "${current_mcvs_dotnet_action_version}" = "null" ]; then
+            echo "Failed to extract the current version of the mcvs-dotnet-action. Please ensure that the mcvs-dotnet-action is defined in lower case in the .github/workflows/dotnet.yml file and that the REMOTE_URL_REF variable is present in the Taskfile.yml."
+            exit 1
+          fi
+
+          if [ "${expected_mcvs_dotnet_action_version}" != "${current_mcvs_dotnet_action_version}" ]; then
+            if [ -n "${GITHUB_ACTIONS}" ]; then
+              echo "Expected mcvs-dotnet-action: ${expected_mcvs_dotnet_action_version} is different than current version in Taskfile: ${current_mcvs_dotnet_action_version}, but do not let the pipeline fail otherwise Dependabot cannot update the version of the action."
+              exit 0
+            fi
+
+            echo
+            echo "###############################################################"
+            echo "#"
+            echo "# WARNING"
+            echo "#"
+            echo "###############################################################"
+            echo "#"
+            echo "# Expected mcvs-dotnet-action: ${expected_mcvs_dotnet_action_version},"
+            echo "# but current version in Taskfile: ${current_mcvs_dotnet_action_version}."
+            echo "#"
+            echo "# Resolve the issue by updating the REMOTE_URL_REF in the"
+            echo "# Taskfile.yml variable to: ${expected_mcvs_dotnet_action_version}."
+            echo "#"
+            echo "###############################################################"
+            echo
+
+            sleep 3 # to ensure that user will see the message
+          fi
+        fi
+    desc: |
+      Ensure that the mcvs-dotnet-action version in Taskfile.yml matches the
+      one in .github/workflows/dotnet.yml. Since Dependabot updates only the
+      workflow file, the Taskfile must be updated manually. This check ensures
+      that any version mismatch causes the pipeline to fail, prompting the user
+      to update the Taskfile to keep the pipeline running successfully.
+    silent: true
+  lint:
+    cmds:
+      - task: keep-local-and-remote-versions-in-sync
+      - task: dotnet-log
+      - |
+        if ! dotnet format whitespace {{.DOTNET_SOLUTION}} \
+          --verify-no-changes \
+          --verbosity {{.DOTNET_VERBOSITY}}; then
+          echo "dotnet format detected whitespace issues. Run: 'task remote:fix-linting-issues' to fix them"
+          exit 1
+        fi
+      - |
+        if ! dotnet format style {{.DOTNET_SOLUTION}} \
+          --severity info \
+          --verify-no-changes \
+          --verbosity {{.DOTNET_VERBOSITY}}; then
+          echo "dotnet format detected code style issues. Run: 'task remote:fix-linting-issues' to fix them"
+          exit 1
+        fi
+    desc: run dotnet format whitespace and style in verification mode
+    silent: true
+  msbuild-check:
+    cmds:
+      - |
+        if [ "{{.DOTNET_BUILD_TOOL}}" != "msbuild" ]; then
+          exit 0
+        fi
+
+        if ! command -v msbuild > /dev/null 2>&1; then
+          echo "The build tool has been set to msbuild, but the msbuild binary has not been found. Add it to the PATH, e.g. by setting the msbuild-install input of the action to 'yes', which requires a Windows runner. Note that the .NET SDK drives every SDK style project on its own, so the default 'dotnet' build tool is sufficient for those."
+          exit 1
+        fi
+
+        msbuild -version -nologo | tail -n1
+    internal: true
+    silent: true
+  mutation:
+    cmds:
+      - task: stryker-install
+      - |
+        set -eu
+
+        timeout_command=""
+        if command -v timeout > /dev/null 2>&1; then
+          timeout_command="timeout {{.MUTATION_TIMEOUT}}"
+        elif command -v gtimeout > /dev/null 2>&1; then
+          timeout_command="gtimeout {{.MUTATION_TIMEOUT}}"
+        fi
+
+        # Stryker resolves the projects from its working directory, so it is
+        # run from the directory that holds the solution. Every path that is
+        # handed to it is made absolute, to keep it independent of that change
+        # of directory.
+        root="$(pwd)"
+        absolute_path() {
+          case "$1" in
+            /*) echo "$1" ;;
+            *) echo "${root}/$1" ;;
+          esac
+        }
+
+        # The break threshold has to be lower than or equal to the low
+        # threshold, so every threshold is aligned with the expected score.
+        set -- {{.STRYKER_BIN}} \
+          --break-at {{.MUTATION_SCORE_EXPECTED}} \
+          --output "$(absolute_path {{.STRYKER_OUTPUT_DIR}})" \
+          --reporter progress \
+          --reporter html \
+          --threshold-high {{.MUTATION_SCORE_EXPECTED}} \
+          --threshold-low {{.MUTATION_SCORE_EXPECTED}}
+
+        if [ -f "{{.STRYKER_CONFIG_PATH}}" ]; then
+          set -- "$@" --config-file "$(absolute_path {{.STRYKER_CONFIG_PATH}})"
+        fi
+
+        # Without a solution, Stryker is run from the test project directory,
+        # which then has to be the working directory.
+        solution_dir="."
+        if [ "{{.DOTNET_SOLUTION}}" != "." ]; then
+          set -- "$@" --solution "$(absolute_path {{.DOTNET_SOLUTION}})"
+          solution_dir="$(dirname {{.DOTNET_SOLUTION}})"
+        fi
+
+        cd "${solution_dir}"
+
+        if ! ${timeout_command} "$@" {{.STRYKER_EXTRA_ARGS}}; then
+          echo "Stryker.NET failed or reported a mutation score below the expected: '{{.MUTATION_SCORE_EXPECTED}}'. Resolve the issue by killing the surviving mutants, which are listed in: {{.STRYKER_OUTPUT_DIR}}/reports/mutation-report.html"
+          exit 1
+        fi
+    desc: run mutation tests with Stryker.NET
+    silent: true
+  mutation-visual:
+    cmds:
+      - task: mutation
+      - |
+        open {{.STRYKER_OUTPUT_DIR}}/reports/mutation-report.html
+    desc: show the mutation test report
+    silent: true
+  nuget-audit:
+    cmds:
+      - task: restore
+      - |
+        set -eu
+
+        echo "Running dotnet list package --vulnerable..."
+        report=$(dotnet list {{.DOTNET_SOLUTION}} package \
+          --vulnerable \
+          --include-transitive \
+          --format json)
+
+        vulnerabilities=$(echo "${report}" | jq '[.. | objects | select(has("vulnerabilities")) | .vulnerabilities[]] | length')
+
+        if [ "${vulnerabilities}" -eq 0 ]; then
+          echo "No vulnerable packages have been found."
+          exit 0
+        fi
+
+        echo "${vulnerabilities} vulnerabilities have been found:"
+        dotnet list {{.DOTNET_SOLUTION}} package --vulnerable --include-transitive
+        exit 1
+    desc: check for vulnerabilities with dotnet list package --vulnerable
+    silent: true
+  nuget-validate:
+    cmds:
+      - |
+        if [ -z "$(find . -name packages.lock.json -not -path '*/bin/*' -not -path '*/obj/*')" ]; then
+          echo "No packages.lock.json has been found. Enable the 'RestorePackagesWithLockFile' property, e.g. in a Directory.Build.props, and commit the generated lock files, as the security scanners audit the resolved versions rather than the constraints."
+          exit 1
+        fi
+      - task: restore
+    desc: validate that the packages.lock.json files are in sync with the projects
+    silent: true
+  osv-scanner:
+    cmds:
+      - task: osv-scanner-install
+      - |
+        lock_files=$(find . -name packages.lock.json -not -path '*/bin/*' -not -path '*/obj/*' | sort)
+        if [ -z "${lock_files}" ]; then
+          echo "No packages.lock.json has been found. Enable the 'RestorePackagesWithLockFile' property, e.g. in a Directory.Build.props, and commit the generated lock files, as the security scanners audit the resolved versions rather than the constraints."
+          exit 1
+        fi
+
+        lockfile_args=""
+        for lock_file in ${lock_files}; do
+          lockfile_args="${lockfile_args} --lockfile ${lock_file}"
+        done
+
+        echo "Running osv-scanner scan..."
+        # Run osv-scanner and capture output, allow it to fail
+        {{.OSV_SCANNER_BIN}} scan source \
+          ${lockfile_args} \
+          > {{.OSV_SCANNER_OUTPUT}} 2>&1 || scan_exit_code=$?
+
+        # Check if scan found vulnerabilities (exit code 1) or had an error (exit code 128)
+        if [ -z "${scan_exit_code}" ]; then
+          echo "No vulnerabilities found."
+          exit 0
+        fi
+
+        if [ "${scan_exit_code}" -ne 1 ]; then
+          echo "osv-scanner encountered an error (exit code: ${scan_exit_code})"
+          cat {{.OSV_SCANNER_OUTPUT}}
+          exit "${scan_exit_code}"
+        fi
+
+        # Vulnerabilities found, check if they are in the ignore list
+        echo "Vulnerabilities detected. Checking against ignore list..."
+
+        # Check if osv-scanner.toml exists for ignoring vulnerabilities
+        if [ -f "osv-scanner.toml" ]; then
+          echo "Found osv-scanner.toml configuration file."
+          echo "Re-running scan with ignore configuration..."
+          {{.OSV_SCANNER_BIN}} scan source \
+            --config osv-scanner.toml \
+            ${lockfile_args} \
+            > {{.OSV_SCANNER_OUTPUT}} 2>&1 || final_exit_code=$?
+
+          if [ -z "${final_exit_code}" ]; then
+            echo "All vulnerabilities are in the ignore list."
+            exit 0
+          elif [ "${final_exit_code}" -eq 1 ]; then
+            echo "Vulnerabilities found that are not in the ignore list:"
+            cat {{.OSV_SCANNER_OUTPUT}}
+            exit 1
+          else
+            echo "osv-scanner encountered an error (exit code: ${final_exit_code})"
+            cat {{.OSV_SCANNER_OUTPUT}}
+            exit "${final_exit_code}"
+          fi
+        else
+          echo "No osv-scanner.toml found. All vulnerabilities will cause failure."
+          cat {{.OSV_SCANNER_OUTPUT}}
+          exit 1
+        fi
+    desc: check for vulnerabilities with osv-scanner
+    silent: true
+  osv-scanner-install:
+    cmds:
+      - |
+        mkdir -p {{.DOTNET_BIN}}
+
+        if [ -x "{{.OSV_SCANNER_BIN}}" ] && {{.OSV_SCANNER_BIN}} --version 2>/dev/null | grep -q "{{.OSV_SCANNER_VERSION_WITHOUT_V_PREFIX}}"; then
+          exit 0
+        fi
+
+        echo "Installing osv-scanner version {{.OSV_SCANNER_VERSION}}..."
+        os=$(uname -s | tr '[:upper:]' '[:lower:]')
+        arch=$(uname -m)
+        case "${arch}" in
+          x86_64) arch=amd64 ;;
+          aarch64) arch=arm64 ;;
+        esac
+        curl -sSfL -o {{.OSV_SCANNER_BIN}} \
+          https://github.com/google/osv-scanner/releases/download/{{.OSV_SCANNER_VERSION}}/osv-scanner_${os}_${arch}
+        chmod +x {{.OSV_SCANNER_BIN}}
+    internal: true
+    silent: true
+  publish:
+    cmds:
+      - task: dotnet-log
+      - |
+        set -eu
+
+        if [ -z "{{.RELEASE_APPLICATION_NAME}}" ]; then
+          echo "The RELEASE_APPLICATION_NAME has not been set. It is used as the assembly name, to make the location of the published binary deterministic."
+          exit 1
+        fi
+
+        project="{{.RELEASE_PROJECT}}"
+        if [ -z "${project}" ]; then
+          project=$(find "{{.SOURCE_DIR}}" -maxdepth 2 \( -name '*.csproj' -o -name '*.fsproj' -o -name '*.vbproj' \) -not -path '*/bin/*' -not -path '*/obj/*' | sort)
+
+          if [ -z "${project}" ]; then
+            echo "No project file has been found in: {{.SOURCE_DIR}}. Set the release-project input to point at the project that has to be published."
+            exit 1
+          fi
+
+          if [ "$(echo "${project}" | wc -l | tr -d ' ')" -ne 1 ]; then
+            echo "More than one project file has been found in: {{.SOURCE_DIR}}. Set the release-project input to point at the project that has to be published."
+            echo "${project}"
+            exit 1
+          fi
+        fi
+
+        version_args=""
+        if [ -n "{{.RELEASE_VERSION}}" ]; then
+          # A tag such as 'v1.2.3' has to become '1.2.3', as the .NET assembly
+          # version does not allow a 'v' prefix.
+          version_args="-p:Version=$(echo "{{.RELEASE_VERSION}}" | sed -E 's/^v//')"
+        fi
+
+        binary_extension=""
+        case "{{.RELEASE_RUNTIME}}" in
+          win-*) binary_extension=".exe" ;;
+        esac
+
+        mkdir -p "{{.BUILD_DIR}}"
+
+        dotnet publish "${project}" \
+          --configuration {{.DOTNET_BUILD_CONFIGURATION}} \
+          --output "{{.BUILD_DIR}}" \
+          --runtime {{.RELEASE_RUNTIME}} \
+          --self-contained {{.RELEASE_SELF_CONTAINED}} \
+          --verbosity {{.DOTNET_VERBOSITY}} \
+          -p:AssemblyName={{.RELEASE_APPLICATION_NAME}} \
+          -p:PublishSingleFile=true \
+          ${version_args}
+
+        binary="{{.BUILD_DIR}}/{{.RELEASE_APPLICATION_NAME}}${binary_extension}"
+        if [ ! -f "${binary}" ]; then
+          echo "The published binary has not been found: ${binary}"
+          exit 1
+        fi
+
+        echo "The binary has been published to: ${binary}"
+    desc: publish a self contained single file binary
+    silent: true
+  report-generator-install:
+    cmds:
+      - task: keep-local-and-remote-versions-in-sync
+      - task: dotnet-tool-install
+        vars:
+          TOOL_PACKAGE: "{{.REPORT_GENERATOR_PACKAGE}}"
+          TOOL_VERSION: "{{.REPORT_GENERATOR_VERSION}}"
+    internal: true
+    silent: true
+  restore:
+    cmds:
+      - task: msbuild-check
+      - |
+        locked=false
+        if [ -n "$(find . -name packages.lock.json -not -path '*/bin/*' -not -path '*/obj/*')" ]; then
+          locked=true
+        fi
+
+        restore_failed() {
+          if [ "${locked}" = "true" ]; then
+            echo "A discrepancy has been detected. Has 'dotnet restore --force-evaluate' been issued?"
+          fi
+
+          exit 1
+        }
+
+        if [ "{{.DOTNET_BUILD_TOOL}}" = "msbuild" ]; then
+          locked_mode=""
+          if [ "${locked}" = "true" ]; then
+            locked_mode="-p:RestoreLockedMode=true"
+          fi
+
+          msbuild {{.DOTNET_SOLUTION}} \
+            -t:Restore \
+            -verbosity:{{.DOTNET_VERBOSITY}} \
+            ${locked_mode} \
+            {{.MSBUILD_ARGS}} \
+            {{.RESTORE_ARGS}} || restore_failed
+
+          exit 0
+        fi
+
+        locked_mode=""
+        if [ "${locked}" = "true" ]; then
+          locked_mode="--locked-mode"
+        fi
+
+        dotnet restore {{.DOTNET_SOLUTION}} \
+          --verbosity {{.DOTNET_VERBOSITY}} \
+          ${locked_mode} \
+          {{.MSBUILD_ARGS}} \
+          {{.RESTORE_ARGS}} || restore_failed
+    desc: restore the nuget dependencies
+    silent: true
+  static-analysis:
+    cmds:
+      - task: keep-local-and-remote-versions-in-sync
+      - task: build
+        vars:
+          BUILD_EXTRA_ARGS: >-
+            -warnaserror -p:EnforceCodeStyleInBuild=true
+      - |
+        if ! dotnet format analyzers {{.DOTNET_SOLUTION}} \
+          --no-restore \
+          --severity info \
+          --verify-no-changes \
+          --verbosity {{.DOTNET_VERBOSITY}}; then
+          echo "The Roslyn analysers detected issues. Run: 'task remote:fix-linting-issues' to fix the issues that can be resolved automatically"
+          exit 1
+        fi
+    desc: run the Roslyn analysers
+    silent: true
+  stryker-install:
+    cmds:
+      - task: keep-local-and-remote-versions-in-sync
+      - task: dotnet-tool-install
+        vars:
+          TOOL_PACKAGE: "{{.STRYKER_PACKAGE}}"
+          TOOL_VERSION: "{{.STRYKER_VERSION}}"
+    internal: true
+    silent: true
+  test:
+    cmds:
+      - task: dotnet-log
+      - |
+        set -eu
+
+        case "{{.TEST_SUITE | default "unit"}}" in
+          component) filter='{{.TEST_FILTER_COMPONENT}}' ;;
+          e2e) filter='{{.TEST_FILTER_E2E}}' ;;
+          integration) filter='{{.TEST_FILTER_INTEGRATION}}' ;;
+          unit) filter='{{.TEST_FILTER_UNIT}}' ;;
+          *)
+            echo "Unknown test suite: {{.TEST_SUITE}}. Expected one of: component, e2e, integration or unit."
+            exit 1
+            ;;
+        esac
+
+        if [ -n "{{.TEST_FILTER}}" ]; then
+          filter="(${filter})&({{.TEST_FILTER}})"
+        fi
+
+        timeout_command=""
+        if command -v timeout > /dev/null 2>&1; then
+          timeout_command="timeout {{.TEST_TIMEOUT}}"
+        elif command -v gtimeout > /dev/null 2>&1; then
+          timeout_command="gtimeout {{.TEST_TIMEOUT}}"
+        fi
+
+        echo "The test filter: ${filter}"
+
+        ${timeout_command} dotnet test {{.DOTNET_SOLUTION}} \
+          --configuration {{.DOTNET_BUILD_CONFIGURATION}} \
+          --filter "${filter}" \
+          --verbosity {{.DOTNET_VERBOSITY}} \
+          {{.MSBUILD_ARGS}} \
+          {{.TEST_EXTRA_ARGS}}
+    desc: run test
+    env:
+      # Testcontainers reads its configuration from the environment. Disabling
+      # Ryuk, the resource reaper, is only sensible on an ephemeral runner, as
+      # the containers of a failed run are then left behind.
+      TESTCONTAINERS_RYUK_DISABLED: "{{.TESTCONTAINERS_RYUK_DISABLED}}"
+    silent: true
+  test-cicd:
+    cmds:
+      - task: test
+        vars:
+          TEST_EXTRA_ARGS: >-
+            --logger "console;verbosity=detailed" {{.TEST_EXTRA_ARGS}}
+          TEST_SUITE: '{{.TEST_SUITE | default "unit"}}'
+    desc: test within CICD should contain verbose logging to facilitate debugging
+    silent: true
+  test-component:
+    cmds:
+      - task: docker-check
+      - task: check-docker-networks
+        vars:
+          CHECK_TYPE: before
+      - task: test
+        vars:
+          TEST_SUITE: component
+      - task: check-docker-networks
+        vars:
+          CHECK_TYPE: after
+    desc: run component tests
+    silent: true
+  test-component-cicd:
+    cmds:
+      - task: docker-check
+      - task: test-cicd
+        vars:
+          TEST_SUITE: component
+    desc: run component tests in CICD
+    silent: true
+  test-e2e:
+    cmds:
+      - task: docker-check
+      - task: test
+        vars:
+          TEST_SUITE: e2e
+    desc: run end-to-end tests
+    silent: true
+  test-e2e-cicd:
+    cmds:
+      - task: docker-check
+      - task: test-cicd
+        vars:
+          TEST_SUITE: e2e
+    desc: run end-to-end tests in CICD
+    silent: true
+  test-integration:
+    cmds:
+      - task: docker-check
+      - task: check-docker-networks
+        vars:
+          CHECK_TYPE: before
+      - task: test
+        vars:
+          TEST_SUITE: integration
+      - task: check-docker-networks
+        vars:
+          CHECK_TYPE: after
+    desc: run integration tests
+    silent: true
+  test-integration-cicd:
+    cmds:
+      - task: docker-check
+      - task: test-cicd
+        vars:
+          TEST_SUITE: integration
+    desc: run integration tests in CICD
+    silent: true
+  yq-install:
+    cmds:
+      # Enabling the keep-local-and-remote-versions-in-sync task as a
+      # dependency will create an infinite loop, as the yq-install unit is
+      # already a dependency within the called unit.
+      - |
+        mkdir -p {{.DOTNET_BIN}}
+
+        if [ -x "{{.YQ_BIN}}" ] && {{.YQ_BIN}} --version 2>/dev/null | grep -q "version {{.YQ_VERSION}}"; then
+          exit 0
+        fi
+
+        echo "Installing yq version {{.YQ_VERSION}}..."
+        os=$(uname -s | tr '[:upper:]' '[:lower:]')
+        arch=$(uname -m)
+        case "${arch}" in
+          x86_64) arch=amd64 ;;
+          aarch64) arch=arm64 ;;
+        esac
+        curl -sSfL -o {{.YQ_BIN}} \
+          https://github.com/mikefarah/yq/releases/download/{{.YQ_VERSION}}/yq_${os}_${arch}
+        chmod +x {{.YQ_BIN}}
+    internal: true
+    silent: true

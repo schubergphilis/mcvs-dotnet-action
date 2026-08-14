@@ -1,0 +1,480 @@
+# yamllint disable rule:line-length
+# yamllint disable rule:quoted-strings
+---
+name: mcvs-dotnet-action
+description: |
+  The Mission Critical Vulnerability Scanner (MCVS) .NET action.
+inputs:
+  build-tool:
+    default: dotnet
+    description: |
+      The tool that builds and restores the projects: dotnet or msbuild. Use
+      msbuild for the projects that the .NET SDK cannot drive on its own, such
+      as the .NET Framework ones.
+  code-coverage-expected:
+    default: "80"
+    description: |
+      The minimum code coverage.
+  code-coverage-timeout:
+    description: |
+      The duration before calculating the code-coverage times out.
+  dotnet-version:
+    description: |
+      The .NET SDK version to install. If empty, then the version is derived
+      from the file that is defined in the dotnet-version-file input.
+  dotnet-version-file:
+    default: "global.json"
+    description: |
+      The path to the global.json from which the .NET SDK version is derived.
+      When that file does not exist, the version is derived from the highest
+      TargetFramework(s) that has been found in the project files.
+  github-token-for-downloading-private-nuget-packages:
+    description: |
+      Whether private NuGet packages have to be downloaded from the GitHub
+      Packages registry of the organisation that owns this repository.
+  grype-version:
+    description: The grype version to be used by the anchore/scan-action.
+  msbuild-args:
+    description: |
+      Additional arguments that are passed to every build, restore, test and
+      publish command, e.g. -p:ContinuousIntegrationBuild=true.
+  msbuild-install:
+    default: no
+    description: |
+      Whether MSBuild has to be added to the PATH. It requires a Windows
+      runner, as it installs the MSBuild of the Visual Studio installation.
+  mutation-score-expected:
+    default: "60"
+    description: |
+      The minimum mutation score that Stryker.NET has to report.
+  mutation-timeout:
+    description: |
+      The duration before the mutation testing times out.
+  release-application-name:
+    description: |
+      The name of the application that has to be released. It is also used as
+      the assembly name, to make the location of the published binary
+      deterministic.
+  release-configuration:
+    default: Release
+    description: |
+      The configuration that is used to publish the application, e.g. Release.
+  release-dir:
+    description: |
+      The directory that contains the project of the binary that has to be
+      published and released.
+  release-project:
+    description: |
+      The path to the project file that has to be published. If empty, then
+      the only project file in the release-dir is used.
+  release-runtime:
+    default: linux-x64
+    description: |
+      The .NET runtime identifier (RID) that the application is published for,
+      e.g. linux-x64, linux-arm64, osx-arm64 or win-x64.
+  release-type:
+    default: binary
+    description: |
+      The type of the release, e.g. binary.
+  restore-args:
+    description: |
+      Additional arguments that are passed to 'dotnet restore', e.g.
+      --ignore-failed-sources.
+  task-install:
+    default: no
+    description: |
+      Whether Task should be installed.
+  task-version:
+    default: 3.52.0
+    description: |
+      The Task version that has to be installed and used.
+  test-filter:
+    description: |
+      An additional expression that is passed to the 'dotnet test --filter'
+      option, e.g. FullyQualifiedName~Slow. It narrows the testing type down.
+  test-timeout:
+    description: |
+      The duration before a test times out. Note: this setting can be used for
+      various types of testing, such as unit, integration, etc.
+  testcontainers-ryuk-disabled:
+    default: "false"
+    description: |
+      Whether the Testcontainers resource reaper, Ryuk, has to be disabled.
+      Only sensible on an ephemeral runner, as the containers of a failed run
+      are then left behind.
+  testing-type:
+    description: |
+      The testing type, e.g. integration, unit or some other.
+  token:
+    description: |
+      A token could be used to pull private NuGet packages.
+runs:
+  using: "composite"
+  steps:
+    #
+    # Determine the .NET version that has been defined in the global.json or,
+    # when that file is absent, in the project files, unless it has been
+    # provided explicitly.
+    #
+    - name: determine dotnet version
+      id: dotnet-version
+      if: |
+        inputs.release-dir != '' ||
+        inputs.task-install == 'yes' ||
+        inputs.testing-type == 'component' ||
+        inputs.testing-type == 'coverage' ||
+        inputs.testing-type == 'e2e' ||
+        inputs.testing-type == 'integration' ||
+        inputs.testing-type == 'lint' ||
+        inputs.testing-type == 'mutation' ||
+        inputs.testing-type == 'nuget-validate' ||
+        inputs.testing-type == 'security-nuget-packages' ||
+        inputs.testing-type == 'static-analysis' ||
+        inputs.testing-type == 'unit'
+      shell: bash
+      env:
+        DOTNET_VERSION: ${{ inputs.dotnet-version }}
+        DOTNET_VERSION_FILE: ${{ inputs.dotnet-version-file }}
+      run: |
+        dotnet_version="${DOTNET_VERSION}"
+        global_json_file=""
+
+        #
+        # The global.json is handed over to the setup-dotnet action as is, as
+        # that action honours the rollForward and allowPrerelease keys, which
+        # a version string cannot express.
+        #
+        if [ -z "${dotnet_version}" ] && [ -f "${DOTNET_VERSION_FILE}" ]; then
+          if [ -z "$(jq -r '.sdk.version // empty' "${DOTNET_VERSION_FILE}")" ]; then
+            echo "The 'sdk.version' key is missing in the dotnet-version-file: '${DOTNET_VERSION_FILE}'."
+            exit 1
+          fi
+
+          global_json_file="${DOTNET_VERSION_FILE}"
+        fi
+
+        #
+        # Fall back on the highest TargetFramework(s) that has been defined in
+        # the project files, e.g. 'net9.0' becomes '9.0.x', as the majority of
+        # the projects does not contain a global.json.
+        #
+        if [ -z "${dotnet_version}" ] && [ -z "${global_json_file}" ]; then
+          target_framework=$(grep -rhoE '<TargetFrameworks?>[^<]+' \
+            --include='*.csproj' \
+            --include='*.fsproj' \
+            --include='*.props' \
+            --include='*.vbproj' \
+            . |\
+            sed -E 's/<TargetFrameworks?>//' |\
+            tr ';' '\n' |\
+            grep -E '^net[0-9]+\.[0-9]+$' |\
+            sed -E 's/^net//' |\
+            sort -V |\
+            tail -n1)
+
+          if [ -n "${target_framework}" ]; then
+            dotnet_version="${target_framework}.x"
+          fi
+        fi
+
+        if [ -z "${dotnet_version}" ] && [ -z "${global_json_file}" ]; then
+          echo "Failed to determine the .NET version. Define it in the 'sdk.version' key of the ${DOTNET_VERSION_FILE}, in the TargetFramework of a project file or set the dotnet-version input."
+          exit 1
+        fi
+
+        echo "dotnet-version: ${dotnet_version}"
+        echo "global-json-file: ${global_json_file}"
+        echo "dotnet-version=${dotnet_version}" >> $GITHUB_OUTPUT
+        echo "global-json-file=${global_json_file}" >> $GITHUB_OUTPUT
+    #
+    # Install the .NET version that has been determined in the previous step.
+    #
+    - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+      if: |
+        steps.dotnet-version.outputs.dotnet-version != '' ||
+        steps.dotnet-version.outputs.global-json-file != ''
+      with:
+        dotnet-version: ${{ steps.dotnet-version.outputs.dotnet-version }}
+        global-json-file: ${{ steps.dotnet-version.outputs.global-json-file }}
+    #
+    # Add MSBuild to the PATH, which requires a Windows runner. The .NET SDK
+    # ships an MSBuild of its own, so this is only needed for the projects that
+    # the SDK cannot drive, such as the .NET Framework ones.
+    #
+    - uses: microsoft/setup-msbuild@30375c66a4eea26614e0d39710365f22f8b0af57 # v3.0.0
+      if: inputs.msbuild-install == 'yes'
+    #
+    # Allow the restore to download packages from private repositories.
+    #
+    - name: configure the private nuget source
+      if: ${{ inputs.github-token-for-downloading-private-nuget-packages != '' }}
+      shell: bash
+      env:
+        NUGET_GITHUB_TOKEN: ${{ inputs.github-token-for-downloading-private-nuget-packages }}
+        REPOSITORY_OWNER: ${{ github.repository_owner }}
+      run: |
+        if dotnet nuget list source | grep -q "github"; then
+          dotnet nuget remove source github
+        fi
+
+        dotnet nuget add source "https://nuget.pkg.github.com/${REPOSITORY_OWNER}/index.json" \
+          --name github \
+          --username "${REPOSITORY_OWNER}" \
+          --password "${NUGET_GITHUB_TOKEN}" \
+          --store-password-in-clear-text
+    #
+    # Install task.
+    #
+    - name: install task
+      if: |
+        inputs.release-dir != '' ||
+        inputs.task-install == 'yes' ||
+        inputs.testing-type == 'component' ||
+        inputs.testing-type == 'coverage' ||
+        inputs.testing-type == 'e2e' ||
+        inputs.testing-type == 'integration' ||
+        inputs.testing-type == 'lint' ||
+        inputs.testing-type == 'mutation' ||
+        inputs.testing-type == 'nuget-validate' ||
+        inputs.testing-type == 'security-nuget-packages' ||
+        inputs.testing-type == 'static-analysis' ||
+        inputs.testing-type == 'unit'
+      shell: bash
+      env:
+        TASK_VERSION: ${{ inputs.task-version }}
+      run: |
+        if ! task --version | grep -q "Task version: v${TASK_VERSION}"; then
+          sh -c "$(curl --location --silent --show-error --fail https://taskfile.dev/install.sh)" -- \
+            -d -b /usr/local/bin "v${TASK_VERSION}"
+        fi
+
+        echo "verifying that task can be found and run..."
+        task --version
+    #
+    # Verify that every project restores and that the packages.lock.json files
+    # are in sync with the project files.
+    #
+    - name: nuget validate
+      if: inputs.testing-type == 'nuget-validate'
+      shell: bash
+      env:
+        DOTNET_BUILD_TOOL: ${{ inputs.build-tool }}
+        MSBUILD_ARGS: ${{ inputs.msbuild-args }}
+        RESTORE_ARGS: ${{ inputs.restore-args }}
+      run: |
+        task remote:nuget-validate --yes
+    #
+    # Download the dependencies.
+    #
+    - name: restore
+      if: |
+        inputs.release-dir != '' ||
+        inputs.testing-type == 'component' ||
+        inputs.testing-type == 'coverage' ||
+        inputs.testing-type == 'e2e' ||
+        inputs.testing-type == 'integration' ||
+        inputs.testing-type == 'lint' ||
+        inputs.testing-type == 'mutation' ||
+        inputs.testing-type == 'security-nuget-packages' ||
+        inputs.testing-type == 'static-analysis' ||
+        inputs.testing-type == 'unit'
+      shell: bash
+      env:
+        DOTNET_BUILD_TOOL: ${{ inputs.build-tool }}
+        MSBUILD_ARGS: ${{ inputs.msbuild-args }}
+        RESTORE_ARGS: ${{ inputs.restore-args }}
+      run: |
+        task remote:restore --yes
+    #
+    # Verify the restored dependencies.
+    #
+    - name: verify nuget packages
+      if: inputs.testing-type == 'security-nuget-packages'
+      shell: bash
+      run: |
+        task remote:nuget-audit --yes
+        task remote:osv-scanner --yes
+    #
+    # Code security scanning.
+    #
+    # * Grype
+    #
+    - uses: anchore/scan-action@e1165082ffb1fe366ebaf02d8526e7c4989ea9d2 # v7.4.0
+      if: inputs.token != '' && inputs.testing-type == 'security-grype'
+      with:
+        grype-version: ${{ inputs.grype-version }}
+        only-fixed: false
+        output-format: table
+        path: "."
+        severity-cutoff: high
+    #
+    # Run the linters, e.g. dotnet format whitespace and style.
+    #
+    - name: lint
+      if: inputs.testing-type == 'lint'
+      shell: bash
+      env:
+        DOTNET_BUILD_TOOL: ${{ inputs.build-tool }}
+        GITHUB_TOKEN: ${{ inputs.token }}
+        MSBUILD_ARGS: ${{ inputs.msbuild-args }}
+      run: |
+        task remote:lint --yes
+    #
+    # Run the Roslyn analysers.
+    #
+    - name: static analysis
+      if: inputs.testing-type == 'static-analysis'
+      shell: bash
+      env:
+        DOTNET_BUILD_TOOL: ${{ inputs.build-tool }}
+        GITHUB_TOKEN: ${{ inputs.token }}
+        MSBUILD_ARGS: ${{ inputs.msbuild-args }}
+      run: |
+        task remote:static-analysis --yes
+    #
+    # Mutation tests.
+    #
+    - name: mutation tests
+      if: inputs.testing-type == 'mutation'
+      shell: bash
+      env:
+        DOTNET_BUILD_TOOL: ${{ inputs.build-tool }}
+        GITHUB_TOKEN: ${{ inputs.token }}
+        MSBUILD_ARGS: ${{ inputs.msbuild-args }}
+        MUTATION_SCORE_EXPECTED: ${{ inputs.mutation-score-expected }}
+        MUTATION_TIMEOUT: ${{ inputs.mutation-timeout }}
+      run: |
+        task remote:mutation --yes
+    #
+    # Unit tests.
+    #
+    - name: unit tests
+      if: inputs.testing-type == 'unit'
+      shell: bash
+      env:
+        DOTNET_BUILD_TOOL: ${{ inputs.build-tool }}
+        GITHUB_TOKEN: ${{ inputs.token }}
+        MSBUILD_ARGS: ${{ inputs.msbuild-args }}
+        TEST_FILTER: ${{ inputs.test-filter }}
+        TEST_TIMEOUT: ${{ inputs.test-timeout }}
+      run: |
+        task remote:test-cicd --yes
+    #
+    # Integration tests.
+    #
+    - name: integration tests
+      if: inputs.testing-type == 'integration'
+      shell: bash
+      env:
+        DOTNET_BUILD_TOOL: ${{ inputs.build-tool }}
+        GITHUB_TOKEN: ${{ inputs.token }}
+        MSBUILD_ARGS: ${{ inputs.msbuild-args }}
+        TESTCONTAINERS_RYUK_DISABLED: ${{ inputs.testcontainers-ryuk-disabled }}
+        TEST_FILTER: ${{ inputs.test-filter }}
+        TEST_TIMEOUT: ${{ inputs.test-timeout }}
+      run: |
+        task remote:test-integration-cicd --yes
+    #
+    # Component tests.
+    #
+    - name: component tests
+      if: inputs.testing-type == 'component'
+      shell: bash
+      env:
+        DOTNET_BUILD_TOOL: ${{ inputs.build-tool }}
+        GITHUB_TOKEN: ${{ inputs.token }}
+        MSBUILD_ARGS: ${{ inputs.msbuild-args }}
+        TESTCONTAINERS_RYUK_DISABLED: ${{ inputs.testcontainers-ryuk-disabled }}
+        TEST_FILTER: ${{ inputs.test-filter }}
+        TEST_TIMEOUT: ${{ inputs.test-timeout }}
+      run: |
+        task remote:test-component-cicd --yes
+    #
+    # End-to-end tests.
+    #
+    - name: end-to-end tests
+      if: inputs.testing-type == 'e2e'
+      shell: bash
+      env:
+        DOTNET_BUILD_TOOL: ${{ inputs.build-tool }}
+        GITHUB_TOKEN: ${{ inputs.token }}
+        MSBUILD_ARGS: ${{ inputs.msbuild-args }}
+        TESTCONTAINERS_RYUK_DISABLED: ${{ inputs.testcontainers-ryuk-disabled }}
+        TEST_FILTER: ${{ inputs.test-filter }}
+        TEST_TIMEOUT: ${{ inputs.test-timeout }}
+      run: |
+        task remote:test-e2e-cicd --yes
+    #
+    # Coverage.
+    #
+    - name: code coverage
+      if: inputs.testing-type == 'coverage'
+      shell: bash
+      env:
+        CODE_COVERAGE_EXPECTED: ${{ inputs.code-coverage-expected }}
+        CODE_COVERAGE_TIMEOUT: ${{ inputs.code-coverage-timeout }}
+        DOTNET_BUILD_TOOL: ${{ inputs.build-tool }}
+        GITHUB_TOKEN: ${{ inputs.token }}
+        MSBUILD_ARGS: ${{ inputs.msbuild-args }}
+      run: |
+        task remote:coverage --yes
+    #
+    # Publish the binary.
+    #
+    - name: Publish binary
+      if: inputs.release-dir != ''
+      shell: bash
+      env:
+        BUILD_DIR: build/${{ inputs.release-type }}/${{ inputs.release-application-name }}
+        DOTNET_BUILD_CONFIGURATION: ${{ inputs.release-configuration }}
+        DOTNET_BUILD_TOOL: ${{ inputs.build-tool }}
+        GITHUB_TOKEN: ${{ inputs.token }}
+        MSBUILD_ARGS: ${{ inputs.msbuild-args }}
+        RELEASE_APPLICATION_NAME: ${{ inputs.release-application-name }}
+        RELEASE_PROJECT: ${{ inputs.release-project }}
+        RELEASE_RUNTIME: ${{ inputs.release-runtime }}
+        RELEASE_VERSION: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
+        SOURCE_DIR: ${{ inputs.release-dir }}
+      run: |
+        task remote:publish --yes
+    #
+    # Compute asset name
+    #
+    - name: Compute asset name
+      if: inputs.release-dir != ''
+      id: compute_asset_name
+      shell: bash
+      env:
+        APPLICATION_NAME: ${{ inputs.release-application-name }}
+        REF_NAME: ${{ github.ref_name }}
+        RELEASE_RUNTIME: ${{ inputs.release-runtime }}
+      run: |
+        BINARY_EXTENSION=""
+        if [[ "${RELEASE_RUNTIME}" == win-* ]]; then
+          BINARY_EXTENSION=".exe"
+        fi
+
+        ASSET_NAME="${APPLICATION_NAME}-${REF_NAME}-${RELEASE_RUNTIME}${BINARY_EXTENSION}"
+        echo "asset_name=${ASSET_NAME}" >> $GITHUB_OUTPUT
+        echo "binary_extension=${BINARY_EXTENSION}" >> $GITHUB_OUTPUT
+    #
+    # Upload the binary to release
+    #
+    # Pinned by commit SHA, like every other action referenced here. An
+    # organisation action policy can require full-length SHA pins, and it is
+    # applied to every action a composite action references, transitively:
+    # GitHub resolves them all during job setup, before any step's `if:` is
+    # evaluated. A tag ref here therefore failed consumers that never release a
+    # binary and never reach this step, as an unexplained `startup_failure` with
+    # no step logs.
+    - name: Upload binary to release
+      if: |
+        github.event_name == 'push' &&
+        contains(github.ref, 'refs/tags/') &&
+        inputs.release-dir != ''
+      uses: svenstaro/upload-release-action@29e53e917877a24fad85510ded594ab3c9ca12de # 2.11.5
+      with:
+        repo_token: ${{ inputs.token }}
+        file: build/${{ inputs.release-type }}/${{ inputs.release-application-name }}/${{ inputs.release-application-name }}${{ steps.compute_asset_name.outputs.binary_extension }}
+        asset_name: ${{ steps.compute_asset_name.outputs.asset_name }}
+        tag: ${{ github.ref }}

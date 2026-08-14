@@ -1,0 +1,37 @@
+# yamllint disable rule:line-length
+---
+name: taskfile-sorted-units
+"on":
+  push:
+permissions:
+  contents: read
+jobs:
+  taskfile-sorted-units:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: |
+          check_sorted() {
+            local task_name="$1"
+            local keys
+
+            keys=$(yq e ".tasks.\"$task_name\" | keys | select(. != null)" ./build/task.yml | sed 's/^- //g')
+
+            if [[ "$keys" != "$(echo "$keys" | sort)" ]]; then
+              echo "❌ Keys are not sorted in $task_name"
+              echo "Expected:"
+              echo "$keys" | sort
+              echo
+              echo "Found:"
+              echo "$keys"
+              exit 1
+            fi
+          }
+
+          for task in $(yq e '.tasks | keys' ./build/task.yml | sed 's/^- //g'); do
+            check_sorted "${task}"
+          done
+
+          echo "✅ All tasks have sorted keys!"
