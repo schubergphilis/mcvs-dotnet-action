@@ -201,8 +201,32 @@ runs:
     # ships an MSBuild of its own, so this is only needed for the projects that
     # the SDK cannot drive, such as the .NET Framework ones.
     #
-    - uses: microsoft/setup-msbuild@30375c66a4eea26614e0d39710365f22f8b0af57 # v3.0.0
+    # MSBuild is located with the vswhere.exe that the Visual Studio installer
+    # ships, instead of with microsoft/setup-msbuild, as an organisation action
+    # policy can restrict the actions that may be referenced, and it is applied
+    # to every action a composite action references, transitively: GitHub
+    # resolves them all during job setup, before any step's `if:` is evaluated.
+    # A disallowed action here therefore failed consumers that do not build with
+    # MSBuild at all and never reach this step, as an unexplained
+    # `startup_failure` with no step logs.
+    #
+    - name: add msbuild to the path
       if: inputs.msbuild-install == 'yes'
+      shell: pwsh
+      run: |
+        $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+        if (-not (Test-Path $vswhere)) {
+          Write-Output "The msbuild-install input requires a Windows runner with Visual Studio, but vswhere.exe has not been found at: ${vswhere}"
+          exit 1
+        }
+        $msbuild = & $vswhere -latest -prerelease -products * -requires Microsoft.Component.MSBuild -find 'MSBuild\**\Bin\MSBuild.exe' |
+          Select-Object -First 1
+        if (-not $msbuild) {
+          Write-Output 'MSBuild.exe has not been found by vswhere.exe. Install the Microsoft.Component.MSBuild component of Visual Studio.'
+          exit 1
+        }
+        Write-Output "msbuild: ${msbuild}"
+        Split-Path -Parent $msbuild | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
     #
     # Allow the restore to download packages from private repositories.
     #
@@ -460,21 +484,39 @@ runs:
     #
     # Upload the binary to release
     #
-    # Pinned by commit SHA, like every other action referenced here. An
-    # organisation action policy can require full-length SHA pins, and it is
-    # applied to every action a composite action references, transitively:
-    # GitHub resolves them all during job setup, before any step's `if:` is
-    # evaluated. A tag ref here therefore failed consumers that never release a
-    # binary and never reach this step, as an unexplained `startup_failure` with
-    # no step logs.
+    # The gh CLI, which every GitHub hosted runner ships, is used instead of an
+    # upload action, as an organisation action policy can restrict the actions
+    # that may be referenced, and it is applied to every action a composite
+    # action references, transitively: GitHub resolves them all during job
+    # setup, before any step's `if:` is evaluated. A disallowed action here
+    # therefore failed consumers that never release a binary and never reach
+    # this step, as an unexplained `startup_failure` with no step logs.
+    #
     - name: Upload binary to release
       if: |
         github.event_name == 'push' &&
         contains(github.ref, 'refs/tags/') &&
         inputs.release-dir != ''
-      uses: svenstaro/upload-release-action@29e53e917877a24fad85510ded594ab3c9ca12de # 2.11.5
-      with:
-        repo_token: ${{ inputs.token }}
-        file: build/${{ inputs.release-type }}/${{ inputs.release-application-name }}/${{ inputs.release-application-name }}${{ steps.compute_asset_name.outputs.binary_extension }}
-        asset_name: ${{ steps.compute_asset_name.outputs.asset_name }}
-        tag: ${{ github.ref }}
+      shell: bash
+      env:
+        ASSET_NAME: ${{ steps.compute_asset_name.outputs.asset_name }}
+        BINARY: build/${{ inputs.release-type }}/${{ inputs.release-application-name }}/${{ inputs.release-application-name }}${{ steps.compute_asset_name.outputs.binary_extension }}
+        GH_REPO: ${{ github.repository }}
+        GH_TOKEN: ${{ inputs.token }}
+        TAG: ${{ github.ref_name }}
+      run: |
+        if [ ! -f "${BINARY}" ]; then
+          echo "The binary that should be released has not been found at: ${BINARY}"
+          exit 1
+        fi
+
+        # The asset is named after the file that is uploaded, so the binary is
+        # copied to the asset name first.
+        asset="${RUNNER_TEMP}/${ASSET_NAME}"
+        cp "${BINARY}" "${asset}"
+
+        if ! gh release view "${TAG}" >/dev/null 2>&1; then
+          gh release create "${TAG}" --title "${TAG}" --generate-notes
+        fi
+
+        gh release upload "${TAG}" "${asset}" --clobber
