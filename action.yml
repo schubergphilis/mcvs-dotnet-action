@@ -213,7 +213,9 @@ runs:
     - name: add msbuild to the path
       if: inputs.msbuild-install == 'yes'
       shell: pwsh
-      run: |
+      # The path that is added to the PATH is the directory of the MSBuild.exe
+      # that vswhere.exe reports, so it is not attacker controlled.
+      run: |  # zizmor: ignore[github-env]
         $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
         if (-not (Test-Path $vswhere)) {
           Write-Output "The msbuild-install input requires a Windows runner with Visual Studio, but vswhere.exe has not been found at: ${vswhere}"
