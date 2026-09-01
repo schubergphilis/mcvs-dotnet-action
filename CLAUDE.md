@@ -94,7 +94,7 @@ The `DOTNET_BUILD_TOOL` variable (the `build-tool` input) selects between the `d
 
 The locked restore mode is expressed as `--locked-mode` for the CLI and as `-p:RestoreLockedMode=true` for MSBuild. The `MSBUILD_ARGS` variable (the `msbuild-args` input) is appended to every build, restore, test and publish command, irrespective of the build tool, as both accept `-p:` properties.
 
-`msbuild-install: yes` runs `microsoft/setup-msbuild`, which requires a Windows runner.
+`msbuild-install: yes` locates MSBuild with the `vswhere.exe` of the Visual Studio installer and adds its directory to the PATH, which requires a Windows runner. It deliberately does not use `microsoft/setup-msbuild`, nor is the release asset uploaded with a third party action: an organisation action policy can restrict which actions may be referenced, and it is applied to every action a composite action references, transitively. GitHub resolves them all during job setup, before any step's `if:` is evaluated, so a disallowed action fails *every* job of a consumer, even the ones that never reach that step, as an unexplained `startup_failure` with no step logs. Prefer a shell step over an action for anything a runner already ships.
 
 ### Security Scanning Flow
 
