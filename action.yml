@@ -517,8 +517,12 @@ runs:
         asset="${RUNNER_TEMP}/${ASSET_NAME}"
         cp "${BINARY}" "${asset}"
 
+        # A matrix that publishes more than one runtime for the same tag runs
+        # this step concurrently, so losing the race to create the release is
+        # not an error, as long as the release exists afterwards.
         if ! gh release view "${TAG}" >/dev/null 2>&1; then
-          gh release create "${TAG}" --title "${TAG}" --generate-notes
+          gh release create "${TAG}" --title "${TAG}" --generate-notes ||
+            gh release view "${TAG}" >/dev/null
         fi
 
         gh release upload "${TAG}" "${asset}" --clobber
