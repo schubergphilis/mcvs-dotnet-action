@@ -1,0 +1,39 @@
+---
+name: dotnet
+"on": pull_request
+permissions:
+  contents: read
+  packages: read
+jobs:
+  mcvs-dotnet-action:
+    strategy:
+      matrix:
+        args:
+          - testing-type: component
+          - testing-type: coverage
+          - testing-type: e2e
+          - testing-type: integration
+          - testing-type: lint
+          - testing-type: mutation
+          - testing-type: nuget-validate
+          - testing-type: security-grype
+          - testing-type: security-nuget-packages
+          - testing-type: static-analysis
+          - testing-type: unit
+    runs-on: ubuntu-24.04
+    env:
+      TASK_X_REMOTE_TASKFILES: 1
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # Every testing type is run against the example solution, which is the
+      # only .NET code in this repository. See the 'Self testing' paragraph of
+      # the README.
+      - uses: ./
+        with:
+          code-coverage-expected: "100.0"
+          mutation-score-expected: "90"
+          task-install: yes
+          testing-type: ${{ matrix.args.testing-type }}
+          token: ${{ secrets.GITHUB_TOKEN }}
