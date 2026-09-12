@@ -1,0 +1,25 @@
+---
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    groups:
+      github-actions-all:
+        patterns:
+          - "*"
+  # The example solution is the only .NET code in this repository and exists to
+  # let the action test itself.
+  - package-ecosystem: nuget
+    directory: /example
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    groups:
+      nuget-all:
+        patterns:
+          - "*"
