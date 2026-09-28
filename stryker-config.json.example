@@ -2,13 +2,12 @@
   "//": [
     "This is an example configuration file for Stryker.NET.",
     "Copy this file to stryker-config.json in your project root to configure",
-    "the mutation testing. The path can be overridden by the",
-    "STRYKER_CONFIG_PATH variable and the file is optional: the mutation task",
-    "only passes it to Stryker when it exists.",
+    "the mutation testing.",
     "",
-    "Note that the break, high and low thresholds are not configured here:",
-    "the mutation task derives all three from the mutation-score-expected",
-    "input, so that the expected score is defined in one place.",
+    "Note that the break, high and low thresholds are deliberately not",
+    "configured here: once mutation testing is scheduled (#3), all three are",
+    "meant to be derived from a single expected score, so that it is defined",
+    "in one place.",
     "",
     "Documentation: https://stryker-mutator.io/docs/stryker-net/configuration/"
   ],
