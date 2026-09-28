@@ -7,7 +7,9 @@ namespace Mcvs.Example;
 /// This type exists to give the self testing workflow of the
 /// mcvs-dotnet-action something to lint, analyse, test and mutate. It is
 /// deliberately small, but not trivial, as a method without a branch produces
-/// no mutants.
+/// no mutants. The built-in System.Version is not used, because it is not a
+/// semantic version: it allows up to four parts and rejects the 'v' prefix of
+/// a tag, and delegating to it would leave no branches to mutate.
 /// </remarks>
 public sealed class SemanticVersion
 {
