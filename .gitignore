@@ -1,0 +1,11 @@
+.DS_Store
+.idea
+.task
+.vscode
+bin
+build/binary
+build/coverage
+build/mutation
+obj
+StrykerOutput
+TestResults
