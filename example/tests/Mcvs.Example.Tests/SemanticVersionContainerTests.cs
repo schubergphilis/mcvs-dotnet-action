@@ -16,7 +16,7 @@ public class SemanticVersionContainerTests
     [Trait("Category", "Integration")]
     public async Task TheVersionThatAContainerReportsIsParsed()
     {
-        await using var container = new ContainerBuilder("alpine:3.22")
+        await using var container = new ContainerBuilder("alpine:3.22@sha256:5291449c3df73caf6ed85e649dec1b9e818b39a5d8c871e97afc13e9cd5e8fa8")
             .WithEntrypoint("/bin/sh", "-c")
             .WithCommand("echo v1.2.3 && sleep infinity")
             .WithWaitStrategy(Wait.ForUnixContainer().UntilMessageIsLogged("v1.2.3"))
