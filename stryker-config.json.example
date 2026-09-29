@@ -1,0 +1,21 @@
+{
+  "//": [
+    "This is an example configuration file for Stryker.NET.",
+    "Copy this file to stryker-config.json in your project root to configure",
+    "the mutation testing.",
+    "",
+    "Note that the break, high and low thresholds are deliberately not",
+    "configured here: once mutation testing is scheduled (#3), all three are",
+    "meant to be derived from a single expected score, so that it is defined",
+    "in one place.",
+    "",
+    "Documentation: https://stryker-mutator.io/docs/stryker-net/configuration/"
+  ],
+  "stryker-config": {
+    "mutate": ["**/*.cs", "!**/*.Generated.cs"],
+    "project-info": {
+      "name": "github.com/schubergphilis/some-project"
+    },
+    "reporters": ["html", "progress"]
+  }
+}
