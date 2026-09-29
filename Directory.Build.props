@@ -1,0 +1,31 @@
+<!--
+    The default MSBuild properties of the mcvs-dotnet-action.
+
+    Copy this file to the root of a project and adjust it where needed. It is
+    imported automatically by every project underneath it, so the settings do
+    not have to be repeated in each csproj.
+
+    The RestorePackagesWithLockFile property is the most important one: it
+    makes the restore write a packages.lock.json, which has to be committed, as
+    the security scanners audit the resolved versions rather than the
+    constraints.
+-->
+<Project>
+  <PropertyGroup>
+    <AnalysisLevel>latest-recommended</AnalysisLevel>
+    <EnableNETAnalyzers>true</EnableNETAnalyzers>
+    <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
+    <!--
+        Roslyn only reports IDE0005, the unnecessary using directives that the
+        .editorconfig promotes to a warning, when the documentation file is
+        generated. See https://github.com/dotnet/roslyn/issues/41640.
+    -->
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <!-- Documenting every public member is not enforced. -->
+    <NoWarn>$(NoWarn);CS1591</NoWarn>
+    <Nullable>enable</Nullable>
+    <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
+  </PropertyGroup>
+</Project>
