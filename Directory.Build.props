@@ -8,7 +8,8 @@
     The RestorePackagesWithLockFile property is the most important one: it
     makes the restore write a packages.lock.json, which has to be committed, as
     the security scanners audit the resolved versions rather than the
-    constraints.
+    constraints. RestoreLockedMode makes a restore on CI fail rather than
+    silently rewrite a lock file that is out of sync with the project.
 -->
 <Project>
   <PropertyGroup>
@@ -26,6 +27,7 @@
     <!-- Documenting every public member is not enforced. -->
     <NoWarn>$(NoWarn);CS1591</NoWarn>
     <Nullable>enable</Nullable>
+    <RestoreLockedMode Condition="'$(CI)' == 'true'">true</RestoreLockedMode>
     <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
   </PropertyGroup>
 </Project>

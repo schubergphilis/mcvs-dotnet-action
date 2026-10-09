@@ -8,8 +8,10 @@
 # Example: Ignore specific vulnerabilities with reasons
 # [[IgnoredVulns]]
 # id = "GHSA-3xq5-wjfh-ppjc"
+# ignoreUntil = YYYY-MM-DD # set no more than a few weeks ahead
 # reason = "Waiting for upstream fix: https://github.com/some/package/issues/1234"
 #
 # [[IgnoredVulns]]
 # id = "CVE-2024-1234"
+# ignoreUntil = YYYY-MM-DD # set no more than a few weeks ahead
 # reason = "False positive - not applicable to our usage"

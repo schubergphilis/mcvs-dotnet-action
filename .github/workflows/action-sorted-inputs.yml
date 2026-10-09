@@ -15,14 +15,17 @@ jobs:
         with:
           persist-credentials: false
       - name: Validate input key order in action.yml
+        shell: bash
         run: |
           inputs_file="action.yml"
 
+          [[ -f "${inputs_file}" ]] || { echo "::error::${inputs_file} not found" >&2; exit 1; }
+
           current=$(yq e '.inputs | keys' "${inputs_file}" | sed 's/^- //')
-          sorted=$(echo "${current}" | sort)
+          sorted=$(echo "${current}" | LC_ALL=C sort)
 
           if [[ "${current}" != "${sorted}" ]]; then
-            echo "❌ Inputs in ${inputs_file} are not sorted alphabetically."
+            echo "::error file=${inputs_file}::Inputs are not sorted alphabetically" >&2
             echo
             echo "🔍 Current order:"
             echo "${current}"
