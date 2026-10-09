@@ -36,18 +36,21 @@ Create an `osv-scanner.toml` file in your project root:
 # Ignore specific vulnerabilities
 [[IgnoredVulns]]
 id = "GHSA-3xq5-wjfh-ppjc"
-ignoreUntil = 2026-09-13
+ignoreUntil = YYYY-MM-DD # set no more than a few weeks ahead
 reason = "Waiting for upstream fix: https://github.com/some/package/issues/1234"
 
 [[IgnoredVulns]]
 id = "CVE-2024-1234"
-ignoreUntil = 2026-09-13
+ignoreUntil = YYYY-MM-DD # set no more than a few weeks ahead
 reason = "False positive - not applicable to our usage"
 ```
 
 ### Important Notes
 
 - Each ignored vulnerability should have a clear `reason` explaining why it's ignored
+- Replace the `YYYY-MM-DD` placeholder of `ignoreUntil` with a real, unquoted
+  TOML date no more than a few weeks ahead, so that the scanner fails again and
+  the ignore is reconsidered once it expires
 - Review and update the ignore list regularly
 - Ignored vulnerabilities should be temporary - aim to fix or update dependencies
 
